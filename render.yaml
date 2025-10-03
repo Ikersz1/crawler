@@ -2,9 +2,5 @@ services:
   - type: web
     name: crawler-api
     env: docker
-    plan: starter
+    plan: free
     autoDeploy: true
-    disk:
-      name: crawler-output
-      mountPath: /app/output_crawler
-      sizeGB: 5
