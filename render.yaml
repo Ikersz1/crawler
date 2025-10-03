@@ -1,12 +1,11 @@
 services:
-  - type: web
-    name: app
+  - name: app
+    type: web
     env: docker
     plan: free
-    dockerfilePath: backend/Dockerfile   # <- archivo, no carpeta
-    buildContext: ./backend              # <- el contexto es la carpeta backend
-    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
     autoDeploy: true
+    healthCheckPath: /health
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
