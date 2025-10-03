@@ -1,2 +1,0 @@
-CORS_EXTRA_ORIGINS=https://tu-frontend.vercel.app,http://localhost:5173
-OUTPUT_ROOT=/tmp/crawler_output
