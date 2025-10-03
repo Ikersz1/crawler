@@ -3,9 +3,10 @@ services:
     name: crawler-api
     env: docker
     plan: free
-    autoDeploy: true
     dockerfilePath: backend/Dockerfile
+    buildContext: ./backend        # <— ESTA LÍNEA ES LA CLAVE
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
