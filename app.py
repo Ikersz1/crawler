@@ -536,13 +536,18 @@ def save_page_structured(job_dir: str,
     data = {
         "url": url,
         "title": title,
-        "sections": sections,
+        "sections": sections,   # texto completo por sección
+        "links": links,         # <-- AÑADIDO: guarda también los links
+        # Si quisieras, podrías guardar un snippet de HTML aquí:
+        # "html_snippet": html_snippet[:2000]
     }
 
+    # JSON por página
     json_file = os.path.join(job_dir, f"{safe_name}.json")
     with open(json_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+    # CSV por página (una fila por sección)
     csv_file = os.path.join(job_dir, f"{safe_name}.csv")
     with open(csv_file, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
@@ -553,65 +558,111 @@ def save_page_structured(job_dir: str,
 
     return data
 
+                             
+def save_all_results_md(job_dir: str, all_results: List[Dict]):
+    """
+    Escribe un único Markdown con todo el contenido del crawl:
+    - Índice con títulos/URLs
+    - Por cada página: título + URL + secciones (texto completo)
+    """
+    md_path = os.path.join(job_dir, "all_results.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(f"# Crawl report — {len(all_results)} page(s)\n\n")
+
+        # Índice
+        f.write("## Index\n\n")
+        for i, entry in enumerate(all_results, start=1):
+            title = entry.get("title") or entry.get("url")
+            url = entry.get("url", "")
+            f.write(f"{i}. [{title}]({url})\n")
+        f.write("\n---\n\n")
+
+        # Detalle
+        for entry in all_results:
+            title = entry.get("title") or entry.get("url")
+            url = entry.get("url", "")
+            f.write(f"## {title}\n\n")
+            f.write(f"**URL:** {url}\n\n")
+
+            sections = entry.get("sections") or {}
+            if not sections:
+                f.write("_No sections extracted._\n\n")
+                continue
+
+            for sec_name, sec_text in sections.items():
+                if not (sec_text or "").strip():
+                    continue
+                f.write(f"### {sec_name}\n\n")
+                f.write((sec_text or "").strip() + "\n\n")
+
 
 # =========================
 #        CRAWLER
 # =========================
 def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
-    visited = set()
+    visited: set[str] = set()
     to_visit: List[Tuple[str, int]] = [(start_url, 0)]
 
+    # carpeta por job
     stamp = time.strftime("%Y%m%d-%H%M%S")
     job_dir = os.path.join(output_root, f"{cfg.name}-{stamp}")
     os.makedirs(job_dir, exist_ok=True)
 
+    # acumulador global
     all_results: List[Dict] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=cfg.userAgent, extra_http_headers=cfg.headers or {})
-        page = context.new_page()
+        try:
+            context = browser.new_context(user_agent=cfg.userAgent, extra_http_headers=cfg.headers or {})
+            page = context.new_page()
 
-        while to_visit and len(visited) < cfg.maxPages:
-            url, depth = to_visit.pop(0)
-            if url in visited or depth > cfg.maxDepth:
-                continue
+            while to_visit and len(visited) < cfg.maxPages:
+                url, depth = to_visit.pop(0)
+                if url in visited or depth > cfg.maxDepth:
+                    continue
 
-            print(f"[Crawling] {url}")
-            ok, err = False, ""
-            for _ in range(max(cfg.retries, 1)):
-                try:
-                    page.goto(url, timeout=cfg.timeout)
-                    page.wait_for_load_state("domcontentloaded")
-                    page.wait_for_timeout(300)
-                    ok = True
-                    break
-                except Exception as e:
-                    err = str(e)
-            if not ok:
-                print(f"[Error] {url}: {err}")
-                continue
+                print(f"[Crawling] {url}")
+                ok, err = False, ""
+                for _ in range(max(cfg.retries, 1)):
+                    try:
+                        page.goto(url, timeout=cfg.timeout)
+                        page.wait_for_load_state("domcontentloaded")
+                        page.wait_for_timeout(300)
+                        ok = True
+                        break
+                    except Exception as e:
+                        err = str(e)
 
-            title = page.title() if cfg.extractTitle else url
-            html = page.content()
+                if not ok:
+                    print(f"[Error] {url}: {err}")
+                    continue
 
-            sections, links_all_states = click_tabs_and_collect(page, url, cfg)
+                title = page.title() if cfg.extractTitle else url
+                html = page.content()
 
-            next_links, seen = [], set()
-            for href in links_all_states:
-                link = normalize_url(url, href, cfg)
-                if link and link not in visited and link not in seen:
-                    seen.add(link)
-                    next_links.append(link)
-                    to_visit.append((link, depth + 1))
+                # pestañas/links
+                sections, links_all_states = click_tabs_and_collect(page, url, cfg)
 
-            save_page_markdown(job_dir, url, title, sections, html, next_links, cfg.saveRawHtml)
-            page_data = save_page_structured(job_dir, url, title, sections, next_links, html)
-            all_results.append(page_data)
-            visited.add(url)
+                # Normalizar y agendar siguientes
+                next_links, seen = [], set()
+                for href in links_all_states:
+                    link = normalize_url(url, href, cfg)
+                    if link and link not in visited and link not in seen:
+                        seen.add(link)
+                        next_links.append(link)
+                        to_visit.append((link, depth + 1))
 
-        browser.close()
+                # Guardar por página
+                save_page_markdown(job_dir, url, title, sections, html, next_links, cfg.saveRawHtml)
+                page_data = save_page_structured(job_dir, url, title, sections, next_links, html)  # <-- incluye "links"
+                all_results.append(page_data)
 
+                visited.add(url)
+        finally:
+            browser.close()
+
+    # Guardar agregados globales
     with open(os.path.join(job_dir, "all_results.json"), "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
 
@@ -624,7 +675,11 @@ def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
                 snippet = (txt[:200] + "...") if len(txt) > 200 else txt
                 w.writerow([entry["url"], entry["title"], sec_name, snippet, len(entry.get("links", []))])
 
+    # NUEVO: markdown agregado legible
+    save_all_results_md(job_dir, all_results)
+
     return {"jobDir": job_dir, "pages": len(visited)}
+
 
 
 # =========================
