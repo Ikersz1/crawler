@@ -17,4 +17,4 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
 EXPOSE 8000
-CMD ["bash", "-lc", "uvicorn crawler_api:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["bash", "-lc", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
