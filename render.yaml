@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: crawler-api
+    name: app
     env: docker
     plan: free
-    dockerfilePath: backend/Dockerfile
-    buildContext: ./backend        # <— ESTA LÍNEA ES LA CLAVE
+    dockerfilePath: backend/Dockerfile   # <- archivo, no carpeta
+    buildContext: ./backend              # <- el contexto es la carpeta backend
     healthCheckPath: /health
     autoDeploy: true
     envVars:
