@@ -688,15 +688,18 @@ def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
 app = FastAPI(title="Crawler API")
 
 
+FRONTENDS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://frontend-crawler-4j12.vercel.app",  # tu dominio de producción en Vercel
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://TU-SITIO.netlify.app",  # <-- cámbialo cuando sepas el subdominio real
-    ],
+    allow_origins=FRONTENDS,                 # lista explícita
+    allow_origin_regex=r"https://.*\.vercel\.app$",  # previews de Vercel
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
