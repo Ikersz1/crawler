@@ -27,7 +27,7 @@ class CrawlConfig(BaseModel):
     useSitemap: bool = False
     prioritizeSitemap: bool = False
     renderJs: bool = True                  # si False, evitamos clicks/tabs
-    timeout: int = 10000                   # ms para goto
+    timeout: int = 30000                   # ms para goto
     retries: int = 2
     concurrency: int = 2                   # (no usado en esta versión sync)
     requestsPerMinute: int = 60            # (no usado en esta versión sync)
@@ -616,6 +616,10 @@ def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
         try:
             context = browser.new_context(user_agent=cfg.userAgent, extra_http_headers=cfg.headers or {})
             page = context.new_page()
+            try:
+                page.set_default_navigation_timeout(cfg.timeout)
+            except:
+                pass
 
             while to_visit and len(visited) < cfg.maxPages:
                 url, depth = to_visit.pop(0)
@@ -626,8 +630,7 @@ def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
                 ok, err = False, ""
                 for _ in range(max(cfg.retries, 1)):
                     try:
-                        page.goto(url, timeout=cfg.timeout)
-                        page.wait_for_load_state("domcontentloaded")
+                        page.goto(url, timeout=cfg.timeout, wait_until="domcontentloaded")
                         page.wait_for_timeout(300)
                         ok = True
                         break
@@ -749,6 +752,10 @@ def _run_crawl_job(job_id: str, cfg: CrawlConfig, start_url: str):
             try:
                 context = browser.new_context(user_agent=cfg.userAgent, extra_http_headers=cfg.headers or {})
                 page = context.new_page()
+                try:
+                    page.set_default_navigation_timeout(cfg.timeout)
+                except:
+                    pass
 
                 while to_visit and len(visited) < cfg.maxPages:
                     url, depth = to_visit.pop(0)
@@ -759,8 +766,7 @@ def _run_crawl_job(job_id: str, cfg: CrawlConfig, start_url: str):
                     ok, err = False, ""
                     for _ in range(max(cfg.retries, 1)):
                         try:
-                            page.goto(url, timeout=cfg.timeout)
-                            page.wait_for_load_state("domcontentloaded")
+                            page.goto(url, timeout=cfg.timeout, wait_until="domcontentloaded")
                             page.wait_for_timeout(300)
                             ok = True
                             break
