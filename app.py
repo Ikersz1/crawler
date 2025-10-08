@@ -2,7 +2,7 @@ import os, fnmatch, time, csv, json, re
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urljoin, urlparse, parse_qs, urlunparse
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -688,18 +688,15 @@ def crawl_single(start_url: str, cfg: CrawlConfig, output_root: str):
 app = FastAPI(title="Crawler API")
 
 
-FRONTENDS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://frontend-crawler-4j12.vercel.app",  # tu dominio de producción en Vercel
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=FRONTENDS,                 # lista explícita
-    allow_origin_regex=r"https://.*\.vercel\.app$",  # previews de Vercel
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://TU-SITIO.netlify.app",  # <-- cámbialo cuando sepas el subdominio real
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -707,6 +704,115 @@ app.add_middleware(
 
 
 OUTPUT_ROOT = "output_crawler"
+JOBS: Dict[str, Dict] = {}
+
+def _init_job(job_id: str, cfg: CrawlConfig, start_url: str):
+    JOBS[job_id] = {
+        "id": job_id,
+        "name": cfg.name or "job",
+        "created_at": time.time(),
+        "status": {"running": True, "done": False, "error": None},
+        "counts": {"crawled": 0},
+        "logs": [],
+        "jobDir": None,
+        "startUrl": start_url,
+    }
+
+def _job_log(job_id: str, level: str, message: str):
+    job = JOBS.get(job_id)
+    if not job:
+        return
+    job["logs"].append({
+        "ts": time.time(),
+        "level": level,
+        "message": message,
+    })
+
+def _run_crawl_job(job_id: str, cfg: CrawlConfig, start_url: str):
+    try:
+        _job_log(job_id, "info", f"Starting crawl: {start_url}")
+
+        # Versión con callbacks de progreso mínima: contamos páginas al vuelo
+        visited: set[str] = set()
+        to_visit: List[Tuple[str, int]] = [(start_url, 0)]
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        job_dir = os.path.join(OUTPUT_ROOT, f"{cfg.name}-{stamp}")
+        os.makedirs(job_dir, exist_ok=True)
+
+        all_results: List[Dict] = []
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(user_agent=cfg.userAgent, extra_http_headers=cfg.headers or {})
+                page = context.new_page()
+
+                while to_visit and len(visited) < cfg.maxPages:
+                    url, depth = to_visit.pop(0)
+                    if url in visited or depth > cfg.maxDepth:
+                        continue
+
+                    _job_log(job_id, "info", f"[Crawling] {url}")
+                    ok, err = False, ""
+                    for _ in range(max(cfg.retries, 1)):
+                        try:
+                            page.goto(url, timeout=cfg.timeout)
+                            page.wait_for_load_state("domcontentloaded")
+                            page.wait_for_timeout(300)
+                            ok = True
+                            break
+                        except Exception as e:
+                            err = str(e)
+
+                    if not ok:
+                        _job_log(job_id, "error", f"[Error] {url}: {err}")
+                        continue
+
+                    title = page.title() if cfg.extractTitle else url
+                    html = page.content()
+                    sections, links_all_states = click_tabs_and_collect(page, url, cfg)
+
+                    next_links, seen = [], set()
+                    for href in links_all_states:
+                        link = normalize_url(url, href, cfg)
+                        if link and link not in visited and link not in seen:
+                            seen.add(link)
+                            next_links.append(link)
+                            to_visit.append((link, depth + 1))
+
+                    save_page_markdown(job_dir, url, title, sections, html, next_links, cfg.saveRawHtml)
+                    page_data = save_page_structured(job_dir, url, title, sections, next_links, html)
+                    all_results.append(page_data)
+
+                    visited.add(url)
+                    JOBS[job_id]["counts"]["crawled"] = len(visited)
+
+            finally:
+                browser.close()
+
+        with open(os.path.join(job_dir, "all_results.json"), "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(job_dir, "all_results.csv"), "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["url", "title", "section", "text_snippet", "links_count"])
+            for entry in all_results:
+                for sec_name, sec_text in (entry.get("sections") or {}).items():
+                    txt = (sec_text or "").strip()
+                    snippet = (txt[:200] + "...") if len(txt) > 200 else txt
+                    w.writerow([entry["url"], entry["title"], sec_name, snippet, len(entry.get("links", []))])
+
+        save_all_results_md(job_dir, all_results)
+
+        JOBS[job_id]["status"]["running"] = False
+        JOBS[job_id]["status"]["done"] = True
+        JOBS[job_id]["jobDir"] = os.path.basename(job_dir)
+        _job_log(job_id, "success", f"Crawl finished. Pages: {len(visited)}")
+    except Exception as e:
+        JOBS[job_id]["status"]["running"] = False
+        JOBS[job_id]["status"]["done"] = False
+        JOBS[job_id]["status"]["error"] = str(e)
+        _job_log(job_id, "error", f"Job failed: {e}")
 
 @app.post("/crawl")
 @app.post("/crawl/")
@@ -720,6 +826,40 @@ def start_crawl(cfg: CrawlConfig):
         results.append({"startUrl": url, **res})
 
     return {"status": "ok", "results": results}
+
+@app.post("/crawl_async")
+@app.post("/crawl_async/")
+def start_crawl_async(cfg: CrawlConfig, background: BackgroundTasks):
+    if not cfg.startUrls:
+        raise HTTPException(status_code=400, detail="startUrls vacío")
+    # Por ahora: un job por primera URL
+    start_url = cfg.startUrls[0]
+    job_id = f"{int(time.time()*1000)}"
+    _init_job(job_id, cfg, start_url)
+    background.add_task(_run_crawl_job, job_id, cfg, start_url)
+    return {"job_id": job_id}
+
+@app.get("/jobs/{job_id}")
+def job_info(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "id": job["id"],
+        "name": job["name"],
+        "created_at": job["created_at"],
+        "status": job["status"],
+        "counts": job["counts"],
+        "jobDir": job.get("jobDir"),
+        "startUrl": job.get("startUrl"),
+    }
+
+@app.get("/jobs/{job_id}/logs")
+def job_logs(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"logs": job["logs"]}
 
 @app.get("/download/{job}/{filename}")
 def download_file(job: str, filename: str):
