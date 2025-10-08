@@ -735,7 +735,6 @@ def _run_crawl_job(job_id: str, cfg: CrawlConfig, start_url: str):
     try:
         _job_log(job_id, "info", f"Starting crawl: {start_url}")
 
-        # Versión con callbacks de progreso mínima: contamos páginas al vuelo
         visited: set[str] = set()
         to_visit: List[Tuple[str, int]] = [(start_url, 0)]
 
@@ -835,7 +834,6 @@ def start_crawl(cfg: CrawlConfig):
 def start_crawl_async(cfg: CrawlConfig, background: BackgroundTasks):
     if not cfg.startUrls:
         raise HTTPException(status_code=400, detail="startUrls vacío")
-    # Por ahora: un job por primera URL
     start_url = cfg.startUrls[0]
     job_id = f"{int(time.time()*1000)}"
     _init_job(job_id, cfg, start_url)
